@@ -1,31 +1,29 @@
 #include <Arduino.h>
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 #include <ArduinoJson.h>
-
 #include <WebSocketsClient.h>
-#include <ESP8266WiFi.h>
-
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 #include <Hash.h>
 
 #define USE_SERIAL Serial
 #define LIGHT_PIN 14
-
 #define SEND_MESSAGE_FROM_AIRSHIP 1
 #define SEND_MESSAGE_FROM_CALBANIA 2
 #define CONFIRM_MESSAGE_FROM_AIRSHIP 3
 #define BROADCAST_TO_CALBANIA_CLIENTS 4
-
 #define TURN_OFF 0
 #define TURN_ON 1
-
 #define DEAD 0
 #define ALIVE 1
+#define MODEL_NAME "airship"
 
 ESP8266WiFiMulti WiFiMulti;
 WebSocketsClient webSocket;
 String UNIQUE_ID  = "";
+int CURRENT_STATUS = HIGH;
 
 String getAirShipStatus() {
 
@@ -35,7 +33,7 @@ String getAirShipStatus() {
   doc["id"] = UNIQUE_ID;
   doc["status"] = ALIVE;
   JsonObject command = doc.createNestedObject("command");
-  command["action"] = TURN_ON;
+  command["action"] = CURRENT_STATUS;
   command["type"] = SEND_MESSAGE_FROM_AIRSHIP;
 
   serializeJson(doc, airShipStatus);
@@ -56,16 +54,16 @@ void receiveCommand(const char * json) {
   }
 
   int action = doc["command"]["action"];
+  CURRENT_STATUS = action;
   String airshipStatus = "";
 
   doc["status"] = ALIVE;
   doc["command"]["type"] = CONFIRM_MESSAGE_FROM_AIRSHIP;
 
   serializeJson(doc, airshipStatus);
-  digitalWrite(LIGHT_PIN, action);
+  digitalWrite(LIGHT_PIN, CURRENT_STATUS);
   USE_SERIAL.printf(airshipStatus.c_str());
   webSocket.sendTXT((const uint8_t*) airshipStatus.c_str(), airshipStatus.length());
-
 }
 
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
@@ -99,11 +97,54 @@ void setUniqueId() {
   UNIQUE_ID = String(hex);
 }
 
+void configOTA() {
+  
+    ArduinoOTA.setHostname(MODEL_NAME);
+
+    ArduinoOTA.onStart([]() {
+      String type;
+
+      if (ArduinoOTA.getCommand() == U_FLASH) {
+        type = "sketch";
+      } else { // U_FS
+        type = "filesystem";
+      }
+
+      // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+      USE_SERIAL.println("Start updating " + type);
+  });
+
+  ArduinoOTA.onEnd([]() {
+    USE_SERIAL.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    USE_SERIAL.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    USE_SERIAL.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      USE_SERIAL.println("Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      USE_SERIAL.println("Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      USE_SERIAL.println("Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      USE_SERIAL.println("Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      USE_SERIAL.println("End Failed");
+    }
+  });
+
+  ArduinoOTA.begin();
+
+}
+
 void setup() {
 
 	USE_SERIAL.begin(115200);
 	USE_SERIAL.setDebugOutput(true);
   pinMode(LIGHT_PIN, OUTPUT);
+  digitalWrite(LIGHT_PIN, CURRENT_STATUS);
 
 	for(uint8_t t = 4; t > 0; t--) {
 		USE_SERIAL.printf("[SETUP] BOOT WAIT %d...\n", t);
@@ -111,23 +152,25 @@ void setup() {
 		delay(1000);
 	}
 
-
   WiFi.enableAP(false);
-	WiFiMulti.addAP("Wifi", "password");
+	WiFiMulti.addAP("Rede", "senha123");
+
 
 	while(WiFiMulti.run() != WL_CONNECTED) {
 		delay(100);
 	}
 
+  configOTA();
+
   setUniqueId();
-  //webSocket.begin("192.168.1.9", 7070, "/airships");
-  //webSocket.begin("192.168.100.155", 7070, "/airships");
-  webSocket.begin("192.168.100.22", 7070, "/airships");
+  webSocket.begin("calbania.local", 7070, "/airships");
 	webSocket.onEvent(webSocketEvent);
 	webSocket.setReconnectInterval(5000);
   webSocket.enableHeartbeat(15000, 3000, 2);
 }
 
 void loop() {
+  ArduinoOTA.handle();
   webSocket.loop();
 }
+
